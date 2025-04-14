@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Prescience": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
