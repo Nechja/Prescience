@@ -253,7 +253,7 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             var checkClause = reader.IsDBNull(2) ? null : reader.GetString(2);
             var columnNames = (string[])reader.GetValue(3);
 
-            var constraint = new Constraint
+            var constraint = new Core.Models.Constraint
             {
                 Name = constraintName,
                 Type = constraintType,
@@ -306,7 +306,7 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             var isUnique = reader.GetBoolean(1);
             var columnNames = (string[])reader.GetValue(2);
 
-            var index = new Index
+            var index = new Core.Models.Index
             {
                 Name = indexName,
                 IsUnique = isUnique,
