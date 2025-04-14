@@ -24,7 +24,7 @@ namespace DBExplorer.Console
                 .AddEnvironmentVariables()
                 .Build();
 
-            // Configure services
+            // Update the code to use the correct extension method for adding logging
             var serviceProvider = new ServiceCollection()
                 .AddLogging(builder =>
                 {
