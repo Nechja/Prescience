@@ -218,9 +218,9 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         return columns;
     }
 
-    private async Task<ICollection<Constraint>> GetConstraintsAsync(NpgsqlConnection connection, string schema, string tableName)
+    private async Task<ICollection<DBExplorer.Core.Models.Constraint>> GetConstraintsAsync(NpgsqlConnection connection, string schema, string tableName)
     {
-        var constraints = new List<Constraint>();
+        var constraints = new List<DBExplorer.Core.Models.Constraint>();
 
         const string sql = @"
                 SELECT 
@@ -267,9 +267,9 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         return constraints;
     }
 
-    private async Task<ICollection<Index>> GetIndexesAsync(NpgsqlConnection connection, string schema, string tableName)
+    private async Task<ICollection<DBExplorer.Core.Models.Index>> GetIndexesAsync(NpgsqlConnection connection, string schema, string tableName)
     {
-        var indexes = new List<Index>();
+        var indexes = new List<DBExplorer.Core.Models.Index>();
 
         const string sql = @"
                 SELECT 

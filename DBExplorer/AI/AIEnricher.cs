@@ -3,8 +3,7 @@ using DBExplorer.Core.Interfaces;
 using DBExplorer.Core.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.Connectors.AI.Anthropic;
-using Microsoft.SemanticKernel.Connectors.AI.Anthropic.TextGeneration;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -24,13 +23,13 @@ public class AIEnricher : IAIEnricher
     private readonly ILogger<AIEnricher> _logger;
     private readonly Kernel _kernel;
 
-    public AIEnricher(ILogger<AIEnricher> logger, string anthropicApiKey)
+    public AIEnricher(ILogger<AIEnricher> logger, string openAIApiKey)
     {
         _logger = logger;
 
-        // Create Semantic Kernel with Claude
+        // Create Semantic Kernel with OpenAI
         var builder = Kernel.CreateBuilder();
-        builder.AddAnthropicChatCompletion("claude-3-opus-20240229", apiKey: anthropicApiKey);
+        builder.AddOpenAIChatCompletion("gpt-4", openAIApiKey);
         _kernel = builder.Build();
     }
 
