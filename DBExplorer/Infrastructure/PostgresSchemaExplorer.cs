@@ -6,6 +6,7 @@ using Npgsql;
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Constraint = DBExplorer.Core.Models.Constraint;
 using Index = DBExplorer.Core.Models.Index;
@@ -94,28 +95,57 @@ public class PostgresSchemaExplorer : ISchemaExplorer
 
     private async Task<ICollection<Table>> GetTablesAsync(NpgsqlConnection connection)
     {
+        // First, get all tables
+        var tables = await FetchBasicTableInfoAsync(connection);
+        
+        // Create a channel for processing tables
+        var channel = Channel.CreateBounded<(Table Table, string Schema, string Name)>(
+            new BoundedChannelOptions(Environment.ProcessorCount)
+            {
+                FullMode = BoundedChannelFullMode.Wait
+            });
+
+        // Start the consumer tasks
+        var consumerTask = ProcessTablesAsync(connection, channel.Reader);
+        
+        // Producer - add all tables to the channel
+        foreach (var table in tables)
+        {
+            await channel.Writer.WriteAsync((table, table.Schema, table.Name));
+        }
+        
+        // Mark that no more items will be produced
+        channel.Writer.Complete();
+        
+        // Wait for all processing to complete
+        await consumerTask;
+        
+        return tables;
+    }
+
+    private async Task<List<Table>> FetchBasicTableInfoAsync(NpgsqlConnection connection)
+    {
         var tables = new List<Table>();
 
-        // Get tables
         const string tableSql = @"
-                SELECT 
-                    t.table_schema, 
-                    t.table_name, 
-                    obj_description(pgc.oid, 'pg_class') as description,
-                    (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = t.table_schema AND table_name = t.table_name) as column_count
-                FROM 
-                    information_schema.tables t
-                JOIN 
-                    pg_catalog.pg_class pgc ON pgc.relname = t.table_name
-                WHERE 
-                    t.table_type = 'BASE TABLE' 
-                    AND t.table_schema NOT IN ('pg_catalog', 'information_schema')
-                ORDER BY 
-                    t.table_schema, t.table_name";
-
+        SELECT 
+            t.table_schema, 
+            t.table_name, 
+            obj_description(pgc.oid, 'pg_class') as description,
+            (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = t.table_schema AND table_name = t.table_name) as column_count
+        FROM 
+            information_schema.tables t
+        JOIN 
+            pg_catalog.pg_class pgc ON pgc.relname = t.table_name
+        WHERE 
+            t.table_type = 'BASE TABLE' 
+            AND t.table_schema NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY 
+            t.table_schema, t.table_name";
+        
         await using var tableCmd = new NpgsqlCommand(tableSql, connection);
         await using var tableReader = await tableCmd.ExecuteReaderAsync();
-
+        
         while (await tableReader.ReadAsync())
         {
             var schema = tableReader.GetString(0);
@@ -123,26 +153,72 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             var description = tableReader.IsDBNull(2) ? null : tableReader.GetString(2);
             var columnCount = tableReader.GetInt64(3);
 
-            var table = new Table
+            tables.Add(new Table
             {
                 Schema = schema,
                 Name = name,
-                LastUpdateTime = DateTime.UtcNow  // We don't have the actual last update time
-            };
-
-            tables.Add(table);
+                LastUpdateTime = DateTime.UtcNow
+            });
         }
-
-        // For each table, get columns, constraints, and indexes
-        foreach (var table in tables)
-        {
-            table.Columns = await GetColumnsAsync(connection, table.Schema, table.Name);
-            table.Constraints = await GetConstraintsAsync(connection, table.Schema, table.Name);
-            table.Indexes = await GetIndexesAsync(connection, table.Schema, table.Name);
-            table.ApproximateRowCount = await GetApproximateRowCountAsync(connection, table.Schema, table.Name);
-        }
-
+        
         return tables;
+    }
+
+    private async Task ProcessTablesAsync(
+        NpgsqlConnection connection, 
+        ChannelReader<(Table Table, string Schema, string Name)> reader)
+    {
+        // Process tables concurrently, but each table's details sequentially
+        var tasks = new List<Task>();
+        
+        // Create a semaphore to limit concurrent connections
+        using var semaphore = new SemaphoreSlim(Environment.ProcessorCount);
+        
+        // Store connection string with original credentials
+        var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connection.ConnectionString);
+        
+        // Ensure password is preserved if it exists
+        var originalConnectionString = connection.ConnectionString;
+        var originalBuilder = new NpgsqlConnectionStringBuilder(originalConnectionString);
+
+        if (!string.IsNullOrEmpty(originalBuilder.Password))
+            connectionStringBuilder.Password = originalBuilder.Password;
+        
+        var secureConnectionString = connectionStringBuilder.ToString();
+        
+        await foreach (var (table, schema, name) in reader.ReadAllAsync())
+        {
+            // Acquire semaphore slot
+            await semaphore.WaitAsync();
+            
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    // For each table, create a new connection using the secured connection string
+                    await using var tableConnection = new NpgsqlConnection(secureConnectionString);
+                    await tableConnection.OpenAsync();
+                    
+                    // Get all table details
+                    table.Columns = await GetColumnsAsync(tableConnection, schema, name);
+                    table.Constraints = await GetConstraintsAsync(tableConnection, schema, name);
+                    table.Indexes = await GetIndexesAsync(tableConnection, schema, name);
+                    table.ApproximateRowCount = await GetApproximateRowCountAsync(tableConnection, schema, name);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing table {Schema}.{Table}", schema, name);
+                }
+                finally
+                {
+                    // Release the semaphore
+                    semaphore.Release();
+                }
+            }));
+        }
+        
+        // Wait for all tasks to complete
+        await Task.WhenAll(tasks);
     }
 
     private async Task<ICollection<Column>> GetColumnsAsync(NpgsqlConnection connection, string schema, string tableName)
