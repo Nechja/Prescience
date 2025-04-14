@@ -1,6 +1,5 @@
 ﻿// DBExplorer.Console/Program.cs
 using DBExplorer.AI.Services;
-using DBExplorer.Core.Interfaces;
 using DBExplorer.Core.Models;
 using DBExplorer.Infrastructure.Neo4j;
 using DBExplorer.Infrastructure.PostgreSQL;
@@ -38,7 +37,7 @@ namespace DBExplorer.Console
                 .AddSingleton<IAIEnricher>(provider =>
                 {
                     var logger = provider.GetRequiredService<ILogger<AIEnricher>>();
-                    var apiKey = configuration["Anthropic:ApiKey"];
+                    var apiKey = configuration["OpenAI:ApiKey"];
                     return new AIEnricher(logger, apiKey);
                 })
                 .AddSingleton<ExplorationService>()
