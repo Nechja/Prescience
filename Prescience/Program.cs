@@ -114,7 +114,7 @@ namespace DBExplorer.Console
                 // Step 4: Generate insights from samples
                 _logger.LogInformation("Generating insights from data samples...");
                 var insights = await _aiEnricher.GenerateDataInsightsAsync(schema, samples);
-                _logger.LogInformation("Generated {InsightCount} insights",, insights.Count());
+                _logger.LogInformation("Generated {InsightCount} insights", insights.Count());
 
                 // Step 5: Enrich graph with insights
                 _logger.LogInformation("Enriching graph with insights...");
