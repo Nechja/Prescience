@@ -8,10 +8,12 @@ using System.Collections.Generic;
 using System.Data;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using DBExplorer.Infrastructure.ConnectionManagement;
 using Constraint = DBExplorer.Core.Models.Constraint;
 using Index = DBExplorer.Core.Models.Index;
 
 namespace DBExplorer.Infrastructure.PostgreSQL;
+
 
 
 
@@ -27,6 +29,7 @@ public interface ISchemaExplorer
 public class PostgresSchemaExplorer : ISchemaExplorer
 {
     private readonly ILogger<PostgresSchemaExplorer> _logger;
+    private IDbConnectionFactory _connectionFactory;
 
     public PostgresSchemaExplorer(ILogger<PostgresSchemaExplorer> logger)
     {
@@ -36,25 +39,29 @@ public class PostgresSchemaExplorer : ISchemaExplorer
     public async Task<DatabaseSchema> ExploreSchemaAsync(string connectionString)
     {
         _logger.LogInformation("Starting schema exploration for PostgreSQL database");
+        
+        // Create a connection factory for this operation
+        _connectionFactory = new PostgresConnectionFactory(connectionString);
 
         var schema = new DatabaseSchema();
 
         try
         {
-            await using var connection = new NpgsqlConnection(connectionString);
-            await connection.OpenAsync();
+            // Use the factory to create a connection
+            await using var connection = await _connectionFactory.CreateConnectionAsync();
 
             // Get database name
             schema.DatabaseName = connection.Database;
 
-            // Get database properties
-            schema.DatabaseProperties = await GetDatabasePropertiesAsync(connection);
-
-            // Get tables
-            schema.Tables = await GetTablesAsync(connection);
-
-            // Get relationships
-            schema.Relationships = await DiscoverRelationshipsInternalAsync(connection);
+            // Each major operation gets its own dedicated connection
+            schema.DatabaseProperties = await ExecuteWithDedicatedConnectionAsync(connection, 
+                conn => GetDatabasePropertiesAsync(conn));
+                
+            schema.Tables = await ExecuteWithDedicatedConnectionAsync(connection, 
+                conn => GetTablesAsync(conn));
+                
+            schema.Relationships = await ExecuteWithDedicatedConnectionAsync(connection, 
+                conn => DiscoverRelationshipsInternalAsync(conn));
 
             _logger.LogInformation("Schema exploration completed. Found {TableCount} tables and {RelationshipCount} relationships",
                 schema.Tables.Count, schema.Relationships.Count);
@@ -95,30 +102,49 @@ public class PostgresSchemaExplorer : ISchemaExplorer
 
     private async Task<ICollection<Table>> GetTablesAsync(NpgsqlConnection connection)
     {
-        // First, get all tables
-        var tables = await FetchBasicTableInfoAsync(connection);
+        // First, get all tables using a dedicated connection
+        var tables = await ExecuteWithDedicatedConnectionAsync(connection, FetchBasicTableInfoAsync);
         
-        // Create a channel for processing tables
-        var channel = Channel.CreateBounded<(Table Table, string Schema, string Name)>(
-            new BoundedChannelOptions(Environment.ProcessorCount)
-            {
-                FullMode = BoundedChannelFullMode.Wait
-            });
-
-        // Start the consumer tasks
-        var consumerTask = ProcessTablesAsync(connection, channel.Reader);
+        // Process each table's details concurrently using dedicated connections
+        var tasks = new List<Task>();
         
-        // Producer - add all tables to the channel
+        // Create a semaphore to limit concurrency
+        using var semaphore = new SemaphoreSlim(Math.Min(Environment.ProcessorCount, 4));
+        
         foreach (var table in tables)
         {
-            await channel.Writer.WriteAsync((table, table.Schema, table.Name));
+            // Acquire semaphore slot
+            await semaphore.WaitAsync();
+            
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    // Process each table with its own dedicated connection
+                    await ExecuteWithDedicatedConnectionAsync(connection, async conn =>
+                    {
+                        // Get all table details
+                        table.Columns = await GetColumnsAsync(conn, table.Schema, table.Name);
+                        table.Constraints = await GetConstraintsAsync(conn, table.Schema, table.Name);
+                        table.Indexes = await GetIndexesAsync(conn, table.Schema, table.Name);
+                        table.ApproximateRowCount = await GetApproximateRowCountAsync(conn, table.Schema, table.Name);
+                        return true;
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing table {Schema}.{Table}", table.Schema, table.Name);
+                }
+                finally
+                {
+                    // Release the semaphore
+                    semaphore.Release();
+                }
+            }));
         }
         
-        // Mark that no more items will be produced
-        channel.Writer.Complete();
-        
-        // Wait for all processing to complete
-        await consumerTask;
+        // Wait for all tasks to complete
+        await Task.WhenAll(tasks);
         
         return tables;
     }
@@ -421,10 +447,9 @@ public class PostgresSchemaExplorer : ISchemaExplorer
     {
         try
         {
-            await using var connection = new NpgsqlConnection(connectionString);
-            await connection.OpenAsync();
-
-            return await DiscoverRelationshipsInternalAsync(connection);
+            // Use the template pattern with the connectionString directly
+            return await ExecuteWithDedicatedConnectionAsync(connectionString, 
+                conn => DiscoverRelationshipsInternalAsync(conn));
         }
         catch (Exception ex)
         {
@@ -456,34 +481,50 @@ public class PostgresSchemaExplorer : ISchemaExplorer
                 WHERE 
                     tc.constraint_type = 'FOREIGN KEY'";
 
-        await using var fkCmd = new NpgsqlCommand(fkSql, connection);
-        await using var fkReader = await fkCmd.ExecuteReaderAsync();
-
-        while (await fkReader.ReadAsync())
+        // Get FK relationships first
+        var fkRelationships = new List<TableRelationship>();
+        
+        await using (var fkCmd = new NpgsqlCommand(fkSql, connection))
+        await using (var fkReader = await fkCmd.ExecuteReaderAsync())
         {
-            var relationship = new TableRelationship
+            while (await fkReader.ReadAsync())
             {
-                SourceSchema = fkReader.GetString(0),
-                SourceTable = fkReader.GetString(1),
-                SourceColumn = fkReader.GetString(2),
-                TargetSchema = fkReader.GetString(3),
-                TargetTable = fkReader.GetString(4),
-                TargetColumn = fkReader.GetString(5),
-                ConstraintName = fkReader.GetString(6),
-                Type = RelationshipType.OneToMany // Default for FKs
-            };
+                var relationship = new TableRelationship
+                {
+                    SourceSchema = fkReader.GetString(0),
+                    SourceTable = fkReader.GetString(1),
+                    SourceColumn = fkReader.GetString(2),
+                    TargetSchema = fkReader.GetString(3),
+                    TargetTable = fkReader.GetString(4),
+                    TargetColumn = fkReader.GetString(5),
+                    ConstraintName = fkReader.GetString(6),
+                    Type = RelationshipType.OneToMany // Default for FKs
+                };
 
-            // Determine if this is a one-to-one relationship
-            if (await IsOneToOneRelationshipAsync(connection, relationship))
+                fkRelationships.Add(relationship);
+            }
+        }
+        
+        // After closing the reader, process each relationship to determine if it's one-to-one
+        foreach (var relationship in fkRelationships)
+        {
+            // Use a dedicated connection for each check to avoid command-in-progress errors
+            bool isOneToOne = await ExecuteWithDedicatedConnectionAsync(connection, 
+                conn => IsOneToOneRelationshipAsync(conn, relationship));
+                
+            if (isOneToOne)
             {
                 relationship.Type = RelationshipType.OneToOne;
             }
-
+            
             relationships.Add(relationship);
         }
 
         // Discover potential many-to-many relationships via junction tables
-        var manyToManyRelationships = await DiscoverManyToManyRelationshipsAsync(connection, relationships);
+        // Using another dedicated connection for this operation
+        var manyToManyRelationships = await ExecuteWithDedicatedConnectionAsync(connection, 
+            conn => DiscoverManyToManyRelationshipsAsync(conn, fkRelationships));
+            
         relationships.AddRange(manyToManyRelationships);
 
         return relationships;
@@ -579,45 +620,47 @@ public class PostgresSchemaExplorer : ISchemaExplorer
     {
         try
         {
-            await using var connection = new NpgsqlConnection(connectionString);
-            await connection.OpenAsync();
-
-            // Get schema name and table name
-            var parts = tableName.Split('.');
-            var schema = parts.Length > 1 ? parts[0] : "public";
-            var table = parts.Length > 1 ? parts[1] : tableName;
-
-            // Sample data
-            var sql = $@"
-                    SELECT * 
-                    FROM ""{schema}"".""{table}"" 
-                    ORDER BY RANDOM() 
-                    LIMIT {sampleSize}";
-
-            await using var cmd = new NpgsqlCommand(sql, connection);
-            await using var reader = await cmd.ExecuteReaderAsync();
-
-            var dataSample = new DataSample
-            {
-                TableName = tableName,
-                Rows = new List<Dictionary<string, object>>()
-            };
-
-            while (await reader.ReadAsync())
-            {
-                var row = new Dictionary<string, object>();
-
-                for (var i = 0; i < reader.FieldCount; i++)
+            // Use the template pattern with the connectionString directly
+            return await ExecuteWithDedicatedConnectionAsync(connectionString, 
+                async connection =>
                 {
-                    var columnName = reader.GetName(i);
-                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                    row[columnName] = value;
-                }
+                    // Get schema name and table name
+                    var parts = tableName.Split('.');
+                    var schema = parts.Length > 1 ? parts[0] : "public";
+                    var table = parts.Length > 1 ? parts[1] : tableName;
 
-                dataSample.Rows.Add(row);
-            }
+                    // Sample data
+                    var sql = $@"
+                            SELECT * 
+                            FROM ""{schema}"".""{table}"" 
+                            ORDER BY RANDOM() 
+                            LIMIT {sampleSize}";
 
-            return new[] { dataSample };
+                    await using var cmd = new NpgsqlCommand(sql, connection);
+                    await using var reader = await cmd.ExecuteReaderAsync();
+
+                    var dataSample = new DataSample
+                    {
+                        TableName = tableName,
+                        Rows = new List<Dictionary<string, object>>()
+                    };
+
+                    while (await reader.ReadAsync())
+                    {
+                        var row = new Dictionary<string, object>();
+
+                        for (var i = 0; i < reader.FieldCount; i++)
+                        {
+                            var columnName = reader.GetName(i);
+                            var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                            row[columnName] = value;
+                        }
+
+                        dataSample.Rows.Add(row);
+                    }
+
+                    return new[] { dataSample };
+                });
         }
         catch (Exception ex)
         {
@@ -630,47 +673,48 @@ public class PostgresSchemaExplorer : ISchemaExplorer
     {
         try
         {
-            await using var connection = new NpgsqlConnection(connectionString);
-            await connection.OpenAsync();
-
-            // Get execution plan using EXPLAIN ANALYZE
-            var explainQuery = $"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}";
-            await using var cmd = new NpgsqlCommand(explainQuery, connection);
-
-            var jsonPlan = await cmd.ExecuteScalarAsync() as string;
-
-            // Extract estimated values from the plan
-            var stats = new QueryStatistics
+            // Use the template pattern with the connectionString directly
+            return await ExecuteWithDedicatedConnectionAsync(connectionString, async connection =>
             {
-                Query = query,
-                ExecutionPlan = jsonPlan,
-                TablesAccessed = ExtractTablesFromQuery(query)
-            };
+                // Get execution plan using EXPLAIN ANALYZE
+                var explainQuery = $"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}";
+                await using var cmd = new NpgsqlCommand(explainQuery, connection);
 
-            // Parse the JSON plan to extract more detailed statistics
-            if (!string.IsNullOrEmpty(jsonPlan))
-            {
-                try
+                var jsonPlan = await cmd.ExecuteScalarAsync() as string;
+
+                // Extract estimated values from the plan
+                var stats = new QueryStatistics
                 {
-                    var planObject = System.Text.Json.JsonDocument.Parse(jsonPlan);
-                    var planRoot = planObject.RootElement[0].GetProperty("Plan");
+                    Query = query,
+                    ExecutionPlan = jsonPlan,
+                    TablesAccessed = ExtractTablesFromQuery(query)
+                };
 
-                    if (planRoot.TryGetProperty("Total Cost", out var totalCost))
-                        stats.EstimatedCost = (long)totalCost.GetDouble();
-
-                    if (planRoot.TryGetProperty("Actual Total Time", out var totalTime))
-                        stats.EstimatedExecutionTimeMs = (long)totalTime.GetDouble();
-
-                    if (planRoot.TryGetProperty("Plan Rows", out var planRows))
-                        stats.EstimatedRowsProcessed = planRows.GetInt64();
-                }
-                catch (Exception ex)
+                // Parse the JSON plan to extract more detailed statistics
+                if (!string.IsNullOrEmpty(jsonPlan))
                 {
-                    _logger.LogWarning(ex, "Error parsing execution plan: {Plan}", jsonPlan);
-                }
-            }
+                    try
+                    {
+                        var planObject = System.Text.Json.JsonDocument.Parse(jsonPlan);
+                        var planRoot = planObject.RootElement[0].GetProperty("Plan");
 
-            return stats;
+                        if (planRoot.TryGetProperty("Total Cost", out var totalCost))
+                            stats.EstimatedCost = (long)totalCost.GetDouble();
+
+                        if (planRoot.TryGetProperty("Actual Total Time", out var totalTime))
+                            stats.EstimatedExecutionTimeMs = (long)totalTime.GetDouble();
+
+                        if (planRoot.TryGetProperty("Plan Rows", out var planRows))
+                            stats.EstimatedRowsProcessed = planRows.GetInt64();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Error parsing execution plan: {Plan}", jsonPlan);
+                    }
+                }
+
+                return stats;
+            });
         }
         catch (Exception ex)
         {
@@ -705,6 +749,47 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         }
 
         return tables;
+    }    /// <summary>
+    /// Executes a database operation using a dedicated connection from a connection string
+    /// </summary>
+    private async Task<T> ExecuteWithDedicatedConnectionAsync<T>(string connectionString, Func<NpgsqlConnection, Task<T>> operation)
+    {
+        // Create a temporary connection factory for this specific connection string
+        var factory = new PostgresConnectionFactory(connectionString);
+        
+        // Use the factory to create a connection
+        await using var connection = await factory.CreateConnectionAsync();
+        return await operation(connection);
+    }
+
+    /// <summary>
+    /// Executes a database operation using a dedicated connection from the connection factory
+    /// </summary>
+    private async Task<T> ExecuteWithDedicatedConnectionAsync<T>(NpgsqlConnection existingConnection, Func<NpgsqlConnection, Task<T>> operation)
+    {
+        try
+        {
+            // Create a fresh connection using the factory
+            // This ensures we have proper authentication every time
+            await using var newConnection = await _connectionFactory.CreateConnectionAsync();
+            return await operation(newConnection);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error executing operation with dedicated connection");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Executes a void database operation using a dedicated connection
+    /// </summary>
+    private async Task ExecuteWithDedicatedConnectionAsync(NpgsqlConnection existingConnection, Func<NpgsqlConnection, Task> operation)
+    {
+        await ExecuteWithDedicatedConnectionAsync<object>(existingConnection, async conn => {
+            await operation(conn);
+            return null;
+        });
     }
 }
 
