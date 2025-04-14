@@ -8,13 +8,12 @@ using System.Collections.Generic;
 using System.Data;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using System.Text.Json;
 using DBExplorer.Infrastructure.ConnectionManagement;
 using Constraint = DBExplorer.Core.Models.Constraint;
 using Index = DBExplorer.Core.Models.Index;
 
 namespace DBExplorer.Infrastructure.PostgreSQL;
-
-
 
 
 
@@ -71,6 +70,82 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error exploring PostgreSQL schema");
+            throw;
+        }
+    }
+    
+    // New method for generating insights from data samples with detailed logging
+    public async Task<IEnumerable<DataInsight>> GenerateInsightsFromSamplesAsync(string connectionString, string tableName, int sampleSize = 100)
+    {
+        _logger.LogInformation("Starting insight generation for table: {TableName}", tableName);
+        
+        try
+        {
+            // First, get the data samples
+            var samples = await SampleDataAsync(connectionString, tableName, sampleSize);
+            if (samples == null || !samples.Any() || !samples.First().Rows.Any())
+            {
+                _logger.LogWarning("No data samples available to generate insights for table: {TableName}", tableName);
+                return new List<DataInsight>();
+            }
+            
+            // Convert samples to a format suitable for AI analysis
+            var sampleJson = JsonSerializer.Serialize(samples.First().Rows);
+            _logger.LogInformation("Prepared data sample for AI analysis, {RowCount} rows, {DataSize} bytes", 
+                samples.First().Rows.Count, 
+                sampleJson.Length);
+            
+            // Log the AI request
+            _logger.LogDebug("Sending request to AI service for insight generation with payload: {TruncatedPayload}", 
+                sampleJson.Length > 1000 ? sampleJson.Substring(0, 1000) + "..." : sampleJson);
+            
+            // Here you would make the actual call to your AI service
+            // For demonstration, I'm showing where to add the logging
+            var aiInsights = await CallAiServiceForInsights(samples.First());
+            
+            // Log the AI response
+            _logger.LogInformation("Received response from AI service: {InsightCount} insights generated", 
+                aiInsights?.Count() ?? 0);
+            _logger.LogDebug("AI service response: {Response}", 
+                JsonSerializer.Serialize(aiInsights));
+            
+            return aiInsights;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error generating insights for table {TableName}", tableName);
+            throw;
+        }
+    }
+    
+    private async Task<IEnumerable<DataInsight>> CallAiServiceForInsights(DataSample sample)
+    {
+        // This method would contain your actual AI service call
+        // For now, this is just a placeholder
+        _logger.LogInformation("Calling AI service for insights on table {TableName}", sample.TableName);
+        
+        try
+        {
+            // Simulate AI service call
+            await Task.Delay(1000); // Simulating network delay
+            
+            // Log before returning the result
+            _logger.LogInformation("Successfully retrieved insights from AI service for table {TableName}", sample.TableName);
+            
+            // Return dummy insights for demo
+            return new List<DataInsight>
+            {
+                new DataInsight
+                {
+                    TableName = sample.TableName,
+                    InsightType = "Distribution",
+                    Description = "Sample insight from AI service"
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error calling AI service for table {TableName}", sample.TableName);
             throw;
         }
     }
@@ -780,17 +855,6 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             throw;
         }
     }
-
-    /// <summary>
-    /// Executes a void database operation using a dedicated connection
-    /// </summary>
-    private async Task ExecuteWithDedicatedConnectionAsync(NpgsqlConnection existingConnection, Func<NpgsqlConnection, Task> operation)
-    {
-        await ExecuteWithDedicatedConnectionAsync<object>(existingConnection, async conn => {
-            await operation(conn);
-            return null;
-        });
-    }
 }
 
 public class QueryStatistics
@@ -801,4 +865,13 @@ public class QueryStatistics
     public long EstimatedExecutionTimeMs { get; set; }
     public long EstimatedRowsProcessed { get; set; }
     public long EstimatedCost { get; set; }
+}
+
+// Add this class at the end of the file, outside of the PostgresSchemaExplorer class
+public class DataInsight
+{
+    public string TableName { get; set; }
+    public string InsightType { get; set; }
+    public string Description { get; set; }
+    public Dictionary<string, object> AdditionalData { get; set; } = new Dictionary<string, object>();
 }

@@ -70,20 +70,21 @@ public class Neo4jGraphBuilder : IGraphBuilder, IDisposable
                 await tx.RunAsync("MATCH (n) DETACH DELETE n");
             });
 
-            _logger.LogInformation("Building schema graph for database: {DatabaseName}", schema.DatabaseName);
-
-            // Create database node
+            _logger.LogInformation("Building schema graph for database: {DatabaseName}", schema.DatabaseName);            // Create database node
             await session.ExecuteWriteAsync(async tx =>
             {
+                // Convert dictionary to JSON string to avoid Neo4j type error with complex objects
+                var propertiesJson = System.Text.Json.JsonSerializer.Serialize(schema.DatabaseProperties);
+
                 await tx.RunAsync(@"
                         CREATE (db:Database {
                             name: $name,
-                            properties: $properties
+                            properties_json: $propertiesJson
                         })",
                     new
                     {
                         name = schema.DatabaseName,
-                        properties = schema.DatabaseProperties
+                        propertiesJson = propertiesJson
                     });
             });
 
