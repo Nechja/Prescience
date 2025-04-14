@@ -7,6 +7,8 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Threading.Tasks;
+using Constraint = DBExplorer.Core.Models.Constraint;
+using Index = DBExplorer.Core.Models.Index;
 
 namespace DBExplorer.Infrastructure.PostgreSQL;
 
@@ -51,7 +53,7 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             schema.Tables = await GetTablesAsync(connection);
 
             // Get relationships
-            schema.Relationships = await DiscoverRelationshipsAsync(connection);
+            schema.Relationships = await DiscoverRelationshipsInternalAsync(connection);
 
             _logger.LogInformation("Schema exploration completed. Found {TableCount} tables and {RelationshipCount} relationships",
                 schema.Tables.Count, schema.Relationships.Count);
@@ -124,7 +126,8 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             var table = new Table
             {
                 Schema = schema,
-                Name = name
+                Name = name,
+                LastUpdateTime = DateTime.UtcNow  // We don't have the actual last update time
             };
 
             tables.Add(table);
@@ -218,9 +221,9 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         return columns;
     }
 
-    private async Task<ICollection<DBExplorer.Core.Models.Constraint>> GetConstraintsAsync(NpgsqlConnection connection, string schema, string tableName)
+    private async Task<ICollection<Core.Models.Constraint>> GetConstraintsAsync(NpgsqlConnection connection, string schema, string tableName)
     {
-        var constraints = new List<DBExplorer.Core.Models.Constraint>();
+        var constraints = new List<Core.Models.Constraint>();
 
         const string sql = @"
                 SELECT 
@@ -253,7 +256,7 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             var checkClause = reader.IsDBNull(2) ? null : reader.GetString(2);
             var columnNames = (string[])reader.GetValue(3);
 
-            var constraint = new Core.Models.Constraint
+            var constraint = new Constraint
             {
                 Name = constraintName,
                 Type = constraintType,
@@ -267,9 +270,9 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         return constraints;
     }
 
-    private async Task<ICollection<DBExplorer.Core.Models.Index>> GetIndexesAsync(NpgsqlConnection connection, string schema, string tableName)
+    private async Task<ICollection<Index>> GetIndexesAsync(NpgsqlConnection connection, string schema, string tableName)
     {
-        var indexes = new List<DBExplorer.Core.Models.Index>();
+        var indexes = new List<Index>();
 
         const string sql = @"
                 SELECT 
@@ -306,7 +309,7 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             var isUnique = reader.GetBoolean(1);
             var columnNames = (string[])reader.GetValue(2);
 
-            var index = new Core.Models.Index
+            var index = new Index
             {
                 Name = indexName,
                 IsUnique = isUnique,
@@ -345,7 +348,7 @@ public class PostgresSchemaExplorer : ISchemaExplorer
             await using var connection = new NpgsqlConnection(connectionString);
             await connection.OpenAsync();
 
-            return await DiscoverRelationshipsAsync(connection);
+            return await DiscoverRelationshipsInternalAsync(connection);
         }
         catch (Exception ex)
         {
@@ -354,7 +357,7 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         }
     }
 
-    private async Task<ICollection<TableRelationship>> DiscoverRelationshipsAsync(NpgsqlConnection connection)
+    private async Task<ICollection<TableRelationship>> DiscoverRelationshipsInternalAsync(NpgsqlConnection connection)
     {
         var relationships = new List<TableRelationship>();
 
@@ -560,13 +563,36 @@ public class PostgresSchemaExplorer : ISchemaExplorer
 
             var jsonPlan = await cmd.ExecuteScalarAsync() as string;
 
-            // Parse the plan
+            // Extract estimated values from the plan
             var stats = new QueryStatistics
             {
                 Query = query,
                 ExecutionPlan = jsonPlan,
                 TablesAccessed = ExtractTablesFromQuery(query)
             };
+
+            // Parse the JSON plan to extract more detailed statistics
+            if (!string.IsNullOrEmpty(jsonPlan))
+            {
+                try
+                {
+                    var planObject = System.Text.Json.JsonDocument.Parse(jsonPlan);
+                    var planRoot = planObject.RootElement[0].GetProperty("Plan");
+
+                    if (planRoot.TryGetProperty("Total Cost", out var totalCost))
+                        stats.EstimatedCost = (long)totalCost.GetDouble();
+
+                    if (planRoot.TryGetProperty("Actual Total Time", out var totalTime))
+                        stats.EstimatedExecutionTimeMs = (long)totalTime.GetDouble();
+
+                    if (planRoot.TryGetProperty("Plan Rows", out var planRows))
+                        stats.EstimatedRowsProcessed = planRows.GetInt64();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error parsing execution plan: {Plan}", jsonPlan);
+                }
+            }
 
             return stats;
         }
@@ -603,26 +629,6 @@ public class PostgresSchemaExplorer : ISchemaExplorer
         }
 
         return tables;
-    }
-
-    Task<DatabaseSchema> ISchemaExplorer.ExploreSchemaAsync(string connectionString)
-    {
-        throw new NotImplementedException();
-    }
-
-    Task<IEnumerable<TableRelationship>> ISchemaExplorer.DiscoverRelationshipsAsync(string connectionString)
-    {
-        throw new NotImplementedException();
-    }
-
-    Task<IEnumerable<DataSample>> ISchemaExplorer.SampleDataAsync(string connectionString, string tableName, int sampleSize)
-    {
-        throw new NotImplementedException();
-    }
-
-    Task<QueryStatistics> ISchemaExplorer.AnalyzeQueryAsync(string connectionString, string query)
-    {
-        throw new NotImplementedException();
     }
 }
 
