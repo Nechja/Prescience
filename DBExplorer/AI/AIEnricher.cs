@@ -29,7 +29,7 @@ public class AIEnricher : IAIEnricher
 
         // Create Semantic Kernel with OpenAI
         var builder = Kernel.CreateBuilder();
-        builder.AddOpenAIChatCompletion("gpt-4", openAIApiKey);
+        builder.AddOpenAIChatCompletion("o3-mini", openAIApiKey);
         _kernel = builder.Build();
     }
 

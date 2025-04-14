@@ -1,11 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35931.197 d17.13
+VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Prescience", "Prescience\Prescience.csproj", "{484FD3A4-619F-47FA-97FE-86B8F42865C5}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DBExplorer", "DBExplorer\DBExplorer.csproj", "{26EACC73-EB98-43B9-8445-EB8B99EA7A54}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatternDiscovery", "PatternDiscovery\PatternDiscovery.csproj", "{B631A66F-A17A-41F3-8B82-1544226297F3}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,6 +23,10 @@ Global
 		{26EACC73-EB98-43B9-8445-EB8B99EA7A54}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{26EACC73-EB98-43B9-8445-EB8B99EA7A54}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{26EACC73-EB98-43B9-8445-EB8B99EA7A54}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B631A66F-A17A-41F3-8B82-1544226297F3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B631A66F-A17A-41F3-8B82-1544226297F3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B631A66F-A17A-41F3-8B82-1544226297F3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B631A66F-A17A-41F3-8B82-1544226297F3}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
