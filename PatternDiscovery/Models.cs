@@ -52,3 +52,32 @@ public class RelationshipMetadata
     public string TargetColumn { get; set; }
     public string RelationshipType { get; set; }
 }
+
+public class PatternDiscoveryResults
+{
+    public List<QueryPattern> Patterns { get; set; } = new List<QueryPattern>();
+    public List<string> Errors { get; set; } = new List<string>();
+    public DateTime ProcessedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class PatternClassification
+{
+    public string PatternType { get; set; }
+    public string Category { get; set; }
+    public double ConfidenceScore { get; set; }
+    public Dictionary<string, string> Attributes { get; set; } = new Dictionary<string, string>();
+}
+
+public class PatternValidationResult
+{
+    public bool IsValid { get; set; }
+    public List<string> ValidationErrors { get; set; } = new List<string>();
+    public string OptimizedQuery { get; set; }
+}
+
+public class PatternTemplateRequest
+{
+    public QueryPattern Pattern { get; set; }
+    public List<string> TargetLanguages { get; set; } = new List<string>();
+    public bool IncludeExamples { get; set; } = true;
+}

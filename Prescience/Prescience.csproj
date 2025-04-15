@@ -15,6 +15,8 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.FileExtensions" Version="9.0.4" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.4" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.4" />
+    <PackageReference Include="Microsoft.SemanticKernel" Version="1.46.0" />
+    <PackageReference Include="Microsoft.SemanticKernel.Core" Version="1.46.0" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.21.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.4" />
     <PackageReference Include="Neo4j.Driver" Version="5.27.0" />
@@ -22,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DBExplorer\DBExplorer.csproj" />
+    <ProjectReference Include="..\PatternDiscovery\PatternDiscovery.csproj" />
   </ItemGroup>
 
   <ItemGroup>
